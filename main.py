@@ -100,6 +100,9 @@ class GestureController:
         self.mode_start_x      = None
         self.mode_start_y      = None
         self.mode_start_dist   = None
+        # Scroll smoothing
+        self.prev_scroll_y     = None
+        self.scroll_velocity   = 0.0
         # Cursor smoothing
         self.cursor_x        = None
         self.cursor_y        = None
@@ -165,7 +168,8 @@ class GestureController:
             return "mute"
 
         # ── SCROLL  (index + middle, no thumb) ──
-        if thumb == 0 and idx == 1 and mid == 1 and rng == 0 and pnk == 0:
+        if (thumb == 0 and idx == 1 and mid == 1 and rng == 0 and pnk == 0) or \
+           (self.current_mode == "scroll" and idx == 1 and mid == 1 and pnk == 0):
             return "scroll"
 
         # ── TAB SWITCH  (index + middle + ring + pinky, no thumb) ──
@@ -194,6 +198,8 @@ class GestureController:
             self.stable_gesture = None
             self.current_mode   = None
             self.cursor_x = self.cursor_y = None
+            self.prev_scroll_y   = None
+            self.scroll_velocity = 0.0
             return
 
         thumb = fingers[0]
@@ -287,10 +293,17 @@ class GestureController:
             return
 
         # Reset cursor smoothing when not in cursor mode
-        self.cursor_x = self.cursor_y = None
+        if gesture not in ("cursor", "left_click", "right_click"):
+            self.cursor_x = self.cursor_y = None
 
-        # ── All other gestures: 0.5s stabilise ───────────────────────
-        if held < 0.5:
+        # Reset scroll tracking when not in scroll mode
+        if gesture != "scroll":
+            self.prev_scroll_y   = None
+            self.scroll_velocity = 0.0
+
+        # ── Stabilization: scroll only needs 0.15s to feel instant and responsive ──
+        stabilize_time = 0.15 if gesture == "scroll" else 0.5
+        if held < stabilize_time:
             cv2.putText(img, "Stabilizing...", (10, 65),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.9, (100, 100, 255), 2)
             return
@@ -444,19 +457,39 @@ class GestureController:
                 self.mode_start_dist = 0.9 * self.mode_start_dist + 0.1 * zoom_dist
 
         # ================================================================
-        # SCROLL — index + middle slide up/down
+        # SCROLL — index + middle slide up/down (continuous smooth tracking)
         # ================================================================
         elif gesture == "scroll":
-            if self.current_mode != "scroll":
-                self.current_mode  = "scroll"
-                self.mode_start_y  = wrist_y
+            # Track the midpoint of index (8) and middle (12) fingertips
+            curr_y = (lmlist[8][2] + lmlist[12][2]) / 2.0
 
-            y_diff = wrist_y - self.mode_start_y
-            if abs(y_diff) > 15:
-                pyautogui.scroll(-int(y_diff / 3) * 15)
-                self.mode_start_y = wrist_y
-                cv2.putText(img, "Scrolling", (50, 120),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 3)
+            if self.current_mode != "scroll" or self.prev_scroll_y is None:
+                self.current_mode    = "scroll"
+                self.prev_scroll_y   = curr_y
+                self.scroll_velocity = 0.0
+
+            raw_dy = curr_y - self.prev_scroll_y
+            self.prev_scroll_y = curr_y
+
+            # Smooth velocity with exponential moving average to eliminate jitter
+            self.scroll_velocity = 0.6 * self.scroll_velocity + 0.4 * raw_dy
+
+            # Visual feedback on camera feed: line & center dot between fingertips
+            p8  = (lmlist[8][1], lmlist[8][2])
+            p12 = (lmlist[12][1], lmlist[12][2])
+            mid_pt = (int((p8[0] + p12[0]) / 2), int(curr_y))
+            cv2.line(img, p8, p12, (0, 255, 255), 2)
+            cv2.circle(img, mid_pt, 6, (0, 255, 255), cv2.FILLED)
+
+            # Scroll continuously when finger motion exceeds micro-jitter threshold
+            if abs(self.scroll_velocity) >= 0.7:
+                # Upward finger motion (negative dy) scrolls up (positive clicks)
+                scroll_delta = -int(self.scroll_velocity * 16)
+                if scroll_delta != 0:
+                    pyautogui.scroll(scroll_delta)
+                    direction = "UP ▲" if scroll_delta > 0 else "DOWN ▼"
+                    cv2.putText(img, f"Scrolling {direction}", (50, 120),
+                                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 3)
 
         # ================================================================
         # DESKTOP — thumb only → Win+D
