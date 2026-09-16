@@ -141,8 +141,11 @@ class GestureController:
                 return "right_click"
             return "none"
 
-        # ── ZOOM  (thumb + index + middle all up) ──
-        if thumb == 1 and idx == 1 and mid == 1 and rng == 0 and pnk == 0:
+        # ── ZOOM  (thumb + index + middle all up, pinky tucked) ──
+        if pnk == 0 and (
+            (thumb == 1 and idx == 1 and mid == 1) or
+            (self.current_mode == "zoom" and (thumb + idx + mid) >= 2 and d_thumb_idx < 60)
+        ):
             return "zoom"
 
         # ── CURSOR  (index only, no thumb) ──
@@ -394,33 +397,51 @@ class GestureController:
                 self.last_action_time = now
 
         # ================================================================
-        # ZOOM — thumb + index + middle spread/pinch → Ctrl+Shift+= / Ctrl+-
+        # ZOOM — thumb + index + middle spread/pinch → Ctrl+= / Ctrl+-
         # ================================================================
         elif gesture == "zoom":
-            idx_mid_dist = self._dist(lmlist, 8, 12)
-            if self.current_mode != "zoom":
-                self.current_mode    = "zoom"
-                self.mode_start_dist = idx_mid_dist
+            d_thumb_idx = self._dist(lmlist, 4, 8)
+            d_thumb_mid = self._dist(lmlist, 4, 12)
+            d_idx_mid   = self._dist(lmlist, 8, 12)
+            zoom_dist   = (d_thumb_idx + d_thumb_mid + d_idx_mid) / 3.0
 
-            dist_diff = idx_mid_dist - self.mode_start_dist
+            if self.current_mode != "zoom" or self.mode_start_dist is None:
+                self.current_mode    = "zoom"
+                self.mode_start_dist = zoom_dist
+
+            dist_diff = zoom_dist - self.mode_start_dist
+
+            # Draw visual feedback triangle between the 3 zoom fingers
+            p4  = (lmlist[4][1], lmlist[4][2])
+            p8  = (lmlist[8][1], lmlist[8][2])
+            p12 = (lmlist[12][1], lmlist[12][2])
+            cv2.line(img, p4, p8, (255, 0, 255), 2)
+            cv2.line(img, p8, p12, (255, 0, 255), 2)
+            cv2.line(img, p4, p12, (255, 0, 255), 2)
 
             # Show live distance on screen for debugging
-            cv2.putText(img, f"d={int(idx_mid_dist)} diff={int(dist_diff)}", (10, 100),
+            cv2.putText(img, f"Zoom d={int(zoom_dist)} diff={int(dist_diff)}", (10, 100),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 0), 2)
 
-            if abs(dist_diff) > 15 and now - self.last_zoom_time > 0.2:
-                if dist_diff > 0:    # fingers spreading → zoom in
-                    pyautogui.hotkey('ctrl', 'shift', '=')
-                    cv2.putText(img, "Zoom In  Ctrl++", (50, 120),
-                                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 255), 3)
-                    print("Action: Zoom In")
-                else:                # fingers pinching → zoom out
-                    pyautogui.hotkey('ctrl', '-')
-                    cv2.putText(img, "Zoom Out Ctrl+-", (50, 120),
-                                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 255), 3)
-                    print("Action: Zoom Out")
-                self.mode_start_dist = idx_mid_dist
-                self.last_zoom_time  = now
+            # Zoom In: fingers spreading apart (Ctrl + =)
+            if (dist_diff > 20 or zoom_dist > 85) and (now - self.last_zoom_time > 0.22):
+                pyautogui.hotkey('ctrl', '=')
+                cv2.putText(img, "Zoom In  Ctrl++", (50, 120),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 255), 3)
+                print("Action: Zoom In")
+                self.last_zoom_time = now
+
+            # Zoom Out: fingers pinching together (Ctrl + -)
+            elif (dist_diff < -15 or zoom_dist < 45) and (now - self.last_zoom_time > 0.22):
+                pyautogui.hotkey('ctrl', '-')
+                cv2.putText(img, "Zoom Out Ctrl+-", (50, 120),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 255), 3)
+                print("Action: Zoom Out")
+                self.last_zoom_time = now
+
+            # Neutral resting zone: smoothly adapt baseline
+            else:
+                self.mode_start_dist = 0.9 * self.mode_start_dist + 0.1 * zoom_dist
 
         # ================================================================
         # SCROLL — index + middle slide up/down
